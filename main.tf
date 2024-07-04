@@ -265,7 +265,6 @@ resource "aws_cloudwatch_log_group" "example" {
   }
 }
 
-
 resource "aws_iam_role" "execution" {
   name = "ecs-fargate-execution-${random_string.suffix.result}"
 
@@ -386,6 +385,18 @@ resource "aws_s3_object" "app1" {
   etag     = filemd5(each.value.path)
 }
 
+resource "aws_ecr_repository" "app1" {
+  name         = "ecs-fargate-${random_string.suffix.result}"
+
+  force_delete = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  image_tag_mutability = "IMMUTABLE"
+}
+
 resource "aws_iam_role" "imagebuilder" {
   name = "ecs-fargate-imagebuilder-${random_string.suffix.result}"
   assume_role_policy = jsonencode({
@@ -400,18 +411,6 @@ resource "aws_iam_role" "imagebuilder" {
       },
     ]
   })
-}
-
-resource "aws_ecr_repository" "app1" {
-  name         = "ecs-fargate-${random_string.suffix.result}"
-
-  force_delete = true
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  image_tag_mutability = "IMMUTABLE"
 }
 
 resource "aws_iam_role_policy" "imagebuilder" {
@@ -525,8 +524,8 @@ resource "aws_instance" "imagebuilder" {
   }
 }
 
-resource "aws_ecs_task_definition" "app2" {
-  family                   = "app2"
+resource "aws_ecs_task_definition" "app1" {
+  family                   = "app1"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = "256"
@@ -535,7 +534,7 @@ resource "aws_ecs_task_definition" "app2" {
   task_role_arn            = aws_iam_role.task.arn
 
   container_definitions = jsonencode([{
-    name  = "app2"
+    name  = "app1"
     image = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${data.aws_region.current.name}.amazonaws.com/ecs-fargate-${random_string.suffix.result}:app1-latest"
 
     portMappings = [{
@@ -553,10 +552,10 @@ resource "aws_ecs_task_definition" "app2" {
   }])
 }
 
-resource "aws_ecs_service" "app2" {
-  name            = "app2"
+resource "aws_ecs_service" "app1" {
+  name            = "app1"
   cluster         = aws_ecs_cluster.example.id
-  task_definition = aws_ecs_task_definition.app2.arn
+  task_definition = aws_ecs_task_definition.app1.arn
   desired_count   = 3
   launch_type     = "FARGATE"
 
@@ -568,7 +567,7 @@ resource "aws_ecs_service" "app2" {
 
   load_balancer {
     target_group_arn = aws_lb_target_group.example.arn
-    container_name   = "app2"
+    container_name   = "app1"
     container_port   = 80
   }
 
