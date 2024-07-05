@@ -14,11 +14,11 @@ RUN echo '{ "name": "app1", "version": "1.0.0", "main": "app.js", "dependencies"
                const app = express(); \
                const port = process.env.PORT; \
                const hostname = process.env.HOSTNAME; \
-               app.get("/", (req, res) => res.send(`Hello, world from ${hostname}!`)); \
+               app.get("/", (req, res) => res.send(`Hello, world from ${hostname} port ${port}!`)); \
                app.listen(port, () => console.log(`App runs on ${hostname} port ${port}`));' > app.js \
     && apk --no-cache add curl
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -f http://$HOSTNAME:$PORT || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -f http://localhost:$PORT || exit 1
 
 EXPOSE $PORT
 

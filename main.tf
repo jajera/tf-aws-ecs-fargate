@@ -7,9 +7,9 @@ resource "random_string" "suffix" {
 variable "vpc_network" {
   description = "CIDR blocks for the VPC and its subnets"
   default = {
-    entire_block     = "10.0.0.0/16"
-    private_subnets  = ["10.0.3.0/24", "10.0.4.0/24", "10.0.5.0/24"]
-    public_subnets   = ["10.0.0.0/24", "10.0.1.0/24", "10.0.2.0/24"]
+    entire_block    = "10.0.0.0/16"
+    private_subnets = ["10.0.3.0/24", "10.0.4.0/24", "10.0.5.0/24"]
+    public_subnets  = ["10.0.0.0/24", "10.0.1.0/24", "10.0.2.0/24"]
   }
 }
 
@@ -103,13 +103,12 @@ resource "aws_route_table" "public" {
 }
 
 resource "aws_route_table_association" "public" {
-  count          = length(var.vpc_network.private_subnets)
+  count          = length(var.vpc_network.public_subnets)
   route_table_id = aws_route_table.public.id
   subnet_id      = aws_subnet.public[count.index].id
 }
 
-
-resource "aws_ec2_instance_connect_endpoint" "example" { 
+resource "aws_ec2_instance_connect_endpoint" "example" {
   subnet_id = aws_subnet.public[0].id
 
   tags = {
@@ -161,50 +160,42 @@ resource "aws_ecs_cluster" "example" {
   }
 }
 
-resource "aws_security_group" "lb" {
-  name   = "ecs-fargate-lb-${random_string.suffix.result}"
-  vpc_id = aws_vpc.example.id
-
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "Allow incoming traffic on port 80"
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "Allow all outbound traffic"
-  }
-
-  tags = {
-    Name = "ecs-fargate-lb-${random_string.suffix.result}"
-  }
-}
-
-resource "aws_lb" "example" {
-  name                       = "ecs-fargate-${random_string.suffix.result}"
+resource "aws_lb" "app1" {
+  name                       = "ecs-fargate-app1-${random_string.suffix.result}"
   internal                   = false
   load_balancer_type         = "application"
   drop_invalid_header_fields = true
 
   security_groups = [
-    aws_security_group.lb.id
+    aws_security_group.app1.id
   ]
 
   subnets = aws_subnet.public.*.id
 
   tags = {
-    Name = "ecs-fargate-${random_string.suffix.result}"
+    Name = "ecs-fargate-app1-${random_string.suffix.result}"
   }
 }
 
-resource "aws_lb_target_group" "example" {
-  name     = "ecs-fargate-${random_string.suffix.result}"
+resource "aws_lb" "app2" {
+  name                       = "ecs-fargate-app2-${random_string.suffix.result}"
+  internal                   = false
+  load_balancer_type         = "application"
+  drop_invalid_header_fields = true
+
+  security_groups = [
+    aws_security_group.app2.id
+  ]
+
+  subnets = aws_subnet.public.*.id
+
+  tags = {
+    Name = "ecs-fargate-app2-${random_string.suffix.result}"
+  }
+}
+
+resource "aws_lb_target_group" "app1" {
+  name     = "ecs-fargate-app1-${random_string.suffix.result}"
   port     = 80
   protocol = "HTTP"
   vpc_id   = aws_vpc.example.id
@@ -221,12 +212,36 @@ resource "aws_lb_target_group" "example" {
 
   stickiness {
     type            = "lb_cookie"
-    cookie_duration = 86400
+    cookie_duration = 1
+    enabled         = false
   }
 }
 
-resource "aws_lb_listener" "example" {
-  load_balancer_arn = aws_lb.example.arn
+resource "aws_lb_target_group" "app2" {
+  name     = "ecs-fargate-app2-${random_string.suffix.result}"
+  port     = 8080
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.example.id
+
+  health_check {
+    interval            = 10
+    path                = "/"
+    timeout             = 5
+    unhealthy_threshold = 2
+    healthy_threshold   = 2
+  }
+
+  target_type = "ip"
+
+  stickiness {
+    type            = "lb_cookie"
+    cookie_duration = 1
+    enabled         = false
+  }
+}
+
+resource "aws_lb_listener" "app1" {
+  load_balancer_arn = aws_lb.app1.arn
   port              = 80
   protocol          = "HTTP"
 
@@ -240,13 +255,44 @@ resource "aws_lb_listener" "example" {
   }
 }
 
-resource "aws_lb_listener_rule" "example" {
-  listener_arn = aws_lb_listener.example.arn
+resource "aws_lb_listener" "app2" {
+  load_balancer_arn = aws_lb.app2.arn
+  port              = 8080
+  protocol          = "HTTP"
+
+  default_action {
+    type = "fixed-response"
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "OK"
+      status_code  = "200"
+    }
+  }
+}
+
+resource "aws_lb_listener_rule" "app1" {
+  listener_arn = aws_lb_listener.app1.arn
   priority     = 1
 
   action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.example.arn
+    target_group_arn = aws_lb_target_group.app1.arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["*"]
+    }
+  }
+}
+
+resource "aws_lb_listener_rule" "app2" {
+  listener_arn = aws_lb_listener.app2.arn
+  priority     = 1
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.app2.arn
   }
 
   condition {
@@ -335,58 +381,71 @@ resource "aws_security_group" "app1" {
   }
 }
 
-data "aws_ami" "amzn2023" {
-  most_recent = true
+resource "aws_security_group" "app2" {
+  name   = "ecs-fargate-app2-${random_string.suffix.result}"
+  vpc_id = aws_vpc.example.id
 
-  filter {
-    name   = "owner-alias"
-    values = ["amazon"]
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
-  filter {
-    name   = "architecture"
-    values = ["x86_64"]
-  }
-
-  filter {
-    name   = "name"
-    values = ["al2023-ami-2023*"]
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
-resource "aws_s3_bucket" "app1" {
+resource "aws_s3_bucket" "example" {
   bucket        = "ecs-fargate-${random_string.suffix.result}"
   force_destroy = true
 }
 
-resource "aws_s3_bucket_ownership_controls" "app1" {
-  bucket = aws_s3_bucket.app1.id
+resource "aws_s3_bucket_ownership_controls" "example" {
+  bucket = aws_s3_bucket.example.id
   rule {
     object_ownership = "BucketOwnerPreferred"
   }
 }
 
 locals {
-  source_code = "${path.module}/external"
-  files = [
-    for file in fileset(local.source_code, "**/*") :
+  app_source_code = "${path.module}/external"
+
+  app_files = [
+    for file in fileset(local.app_source_code, "**/*") :
     {
-      path = "${local.source_code}/${file}",
+      path = "${local.app_source_code}/${file}"
       dest = file
     }
   ]
 }
 
-resource "aws_s3_object" "app1" {
-  for_each = { for file in local.files : file.path => file }
-  bucket   = aws_s3_bucket.app1.id
+resource "aws_s3_object" "example" {
+  for_each = { for file in local.app_files : file.path => file }
+  bucket   = aws_s3_bucket.example.bucket
   key      = each.value.dest
   source   = each.value.path
   etag     = filemd5(each.value.path)
 }
 
 resource "aws_ecr_repository" "app1" {
-  name         = "ecs-fargate-${random_string.suffix.result}"
+  name = "ecs-fargate-app1-${random_string.suffix.result}"
+
+  force_delete = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  image_tag_mutability = "IMMUTABLE"
+}
+
+resource "aws_ecr_repository" "app2" {
+  name = "ecs-fargate-app2-${random_string.suffix.result}"
 
   force_delete = true
 
@@ -439,6 +498,8 @@ resource "aws_iam_role_policy" "imagebuilder" {
         Resource = [
           "${aws_ecr_repository.app1.arn}",
           "${aws_ecr_repository.app1.arn}/*",
+          "${aws_ecr_repository.app2.arn}",
+          "${aws_ecr_repository.app2.arn}/*"          
         ]
       },
       {
@@ -449,20 +510,20 @@ resource "aws_iam_role_policy" "imagebuilder" {
         Resource = "*",
       },
       {
-        Effect   = "Allow",
-        Action   = [
+        Effect = "Allow",
+        Action = [
           "s3:ListAllMyBuckets",
           "s3:ListBucket"
         ],
         Resource = "arn:aws:s3:::*"
       },
       {
-        Effect   = "Allow",
-        Action   = [
+        Effect = "Allow",
+        Action = [
           "s3:GetObject",
           "s3:ListBucket"
         ]
-        Resource = "${aws_s3_bucket.app1.arn}/*",
+        Resource = "${aws_s3_bucket.example.arn}/*",
       }
     ],
   })
@@ -471,6 +532,25 @@ resource "aws_iam_role_policy" "imagebuilder" {
 resource "aws_iam_instance_profile" "imagebuilder" {
   name = "ecs-fargate-imagebuilder-${random_string.suffix.result}"
   role = aws_iam_role.imagebuilder.name
+}
+
+data "aws_ami" "amzn2023" {
+  most_recent = true
+
+  filter {
+    name   = "owner-alias"
+    values = ["amazon"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
+  }
+
+  filter {
+    name   = "name"
+    values = ["al2023-ami-2023*"]
+  }
 }
 
 resource "aws_instance" "imagebuilder" {
@@ -499,24 +579,39 @@ resource "aws_instance" "imagebuilder" {
               chmod 666 /var/run/docker.sock
               systemctl restart docker
 
-              REPO_URL="${aws_ecr_repository.app1.repository_url}"
-              S3_BUCKET="${aws_s3_bucket.app1.bucket}"
+              APP1="app1"
+              APP2="app2"
+              REPO_URL1="${aws_ecr_repository.app1.repository_url}"
+              REPO_URL2="${aws_ecr_repository.app2.repository_url}"
+              S3_BUCKET="${aws_s3_bucket.example.bucket}"
               AWS_REGION="${data.aws_region.current.name}"
-              APP_NAME="app1"
 
               # download source
               mkdir -p ~/workspace
               aws s3 sync s3://$S3_BUCKET ~/workspace/
-              cd ~/workspace/
+              
+              cd ~/workspace/$APP1
 
               # build image
-              docker buildx build -t $APP_NAME:latest .
-              docker tag $APP_NAME:latest $REPO_URL:$APP_NAME-latest
+              docker buildx build -t $APP1:latest .
+              docker tag $APP1:latest $REPO_URL1:$APP1-latest
 
               # upload image
               aws ecr get-login-password --region $AWS_REGION | \
-                docker login --username AWS --password-stdin $REPO_URL
-              docker push $REPO_URL:$APP_NAME-latest
+                docker login --username AWS --password-stdin $REPO_URL1
+              docker push $REPO_URL1:$APP1-latest
+
+              cd ..
+              cd ~/workspace/$APP2
+
+              # build image
+              docker buildx build -t $APP2:latest .
+              docker tag $APP2:latest $REPO_URL2:$APP2-latest
+
+              # upload image
+              aws ecr get-login-password --region $AWS_REGION | \
+                docker login --username AWS --password-stdin $REPO_URL2
+              docker push $REPO_URL2:$APP2-latest
               EOF
 
   tags = {
@@ -529,13 +624,13 @@ resource "aws_ecs_task_definition" "app1" {
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = "256"
-  memory                   = "1024"
+  memory                   = "512"
   execution_role_arn       = aws_iam_role.execution.arn
   task_role_arn            = aws_iam_role.task.arn
 
   container_definitions = jsonencode([{
     name  = "app1"
-    image = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${data.aws_region.current.name}.amazonaws.com/ecs-fargate-${random_string.suffix.result}:app1-latest"
+    image = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${data.aws_region.current.name}.amazonaws.com/ecs-fargate-app1-${random_string.suffix.result}:app1-latest"
 
     portMappings = [{
       containerPort = 80
@@ -560,13 +655,13 @@ resource "aws_ecs_service" "app1" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = aws_subnet.public.*.id
+    subnets          = aws_subnet.private.*.id
     security_groups  = [aws_security_group.app1.id]
-    assign_public_ip = true
+    assign_public_ip = false
   }
 
   load_balancer {
-    target_group_arn = aws_lb_target_group.example.arn
+    target_group_arn = aws_lb_target_group.app1.arn
     container_name   = "app1"
     container_port   = 80
   }
@@ -581,13 +676,81 @@ resource "aws_ecs_service" "app1" {
 
   depends_on = [
     aws_instance.imagebuilder,
-    aws_lb_listener_rule.example,
-    aws_lb_listener.example,
-    aws_lb_target_group.example,
-    aws_lb.example
+    aws_lb_listener_rule.app1,
+    aws_lb_listener.app1,
+    aws_lb_target_group.app1,
+    aws_lb.app1
   ]
 }
 
-output "lb_dns" {
-  value = aws_lb.example.dns_name
+resource "aws_ecs_task_definition" "app2" {
+  family                   = "app2"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.execution.arn
+  task_role_arn            = aws_iam_role.task.arn
+
+  container_definitions = jsonencode([{
+    name  = "app2"
+    image = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${data.aws_region.current.name}.amazonaws.com/ecs-fargate-app2-${random_string.suffix.result}:app2-latest"
+
+    portMappings = [{
+      containerPort = 8080
+    }]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-region"        = data.aws_region.current.name
+        "awslogs-group"         = aws_cloudwatch_log_group.example.name
+        "awslogs-stream-prefix" = "ecs"
+      }
+    }
+  }])
+}
+
+resource "aws_ecs_service" "app2" {
+  name            = "app2"
+  cluster         = aws_ecs_cluster.example.id
+  task_definition = aws_ecs_task_definition.app2.arn
+  desired_count   = 3
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.private.*.id
+    security_groups  = [aws_security_group.app2.id]
+    assign_public_ip = false
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.app2.arn
+    container_name   = "app2"
+    container_port   = 8080
+  }
+
+  deployment_controller {
+    type = "ECS"
+  }
+
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+  health_check_grace_period_seconds  = 300
+
+  depends_on = [
+    aws_instance.imagebuilder,
+    aws_lb_listener_rule.app2,
+    aws_lb_listener.app2,
+    aws_lb_target_group.app2,
+    aws_lb.app2
+  ]
+}
+
+output "lb_dns_app1" {
+  value = aws_lb.app1.dns_name
+}
+
+output "lb_dns_app2" {
+  value = aws_lb.app2.dns_name
 }
